@@ -36,6 +36,7 @@
 #define CQL_ENABLE      0x0080
 #define NATS_ENABLE     0x0100
 #define CRPC_ENABLE     0x0200
+#define AMQP_ENABLE     0x0400
 
 #define PROTO_ALL_ENABLE     0XFFFF
 
@@ -52,6 +53,7 @@ enum proto_type_t {
     PROTO_MONGO,
     PROTO_KAFKA,
     PROTO_CRPC,
+    PROTO_AMQP,
 
     PROTO_MAX
 };
@@ -423,7 +425,7 @@ static __inline enum message_type_t __get_nats_type(const char* buf, size_t coun
 // References Cassandra spec:
 https://github.com/apache/cassandra/blob/trunk/doc/native_protocol_v5.spec
 
-0         8        16        24        32         40
+0         8        16        24        32
 +---------+---------+---------+---------+---------+
 | version |  flags  |      stream       | opcode  |
 +---------+---------+---------+---------+---------+
@@ -715,6 +717,34 @@ static __inline enum message_type_t __get_mysql_type(const char *buf, size_t cou
     return MESSAGE_UNKNOW;
 }
 
+#define __AMQP_MIN_SIZE  8      // Smallest AMQP protocol header size
+static __inline enum message_type_t __get_amqp_type(const char* buf, size_t count)
+{
+    if (count < __AMQP_MIN_SIZE) {
+        return MESSAGE_UNKNOW;
+    }
+
+    // 检查 AMQP 协议头 - "AMQP" 标识符
+    if (buf[0] == 'A' && buf[1] == 'M' && buf[2] == 'Q' && buf[3] == 'P') {
+        // AMQP 协议头通常是客户端发起的
+        return MESSAGE_REQUEST;
+    }
+
+    // 检查 AMQP 帧类型
+    // 帧类型: 1 (方法帧), 2 (内容头帧), 3 (内容体帧), 4-7 (保留), 8 (心跳帧)
+    u8 frame_type = buf[0];
+    if (frame_type >= 1 && frame_type <= 8) {
+        // 对帧类型进行基本检查
+        if (count >= 7) {  // 至少有帧头
+            // 我们不在这里区分请求和响应
+            // 如果符合帧格式，则暂时标记为 REQUEST
+            return MESSAGE_REQUEST;
+        }
+    }
+
+    return MESSAGE_UNKNOW;
+}
+
 static __inline int get_l7_protocol(const char *buf, size_t count, u32 flags, enum l7_direction_t direction,
     struct l7_proto_s *l7pro, struct sock_conn_s *sock_conn){
     enum message_type_t type;
@@ -807,6 +837,16 @@ static __inline int get_l7_protocol(const char *buf, size_t count, u32 flags, en
             return 0;
         }
     }
+
+    if (flags & AMQP_ENABLE) {
+        type = __get_amqp_type(buf, count);
+        if (type != MESSAGE_UNKNOW) {
+            l7pro->proto = PROTO_AMQP;
+            l7pro->type = type;
+            return 0;
+        }
+    }
+
     return -1;
 }
 #endif
